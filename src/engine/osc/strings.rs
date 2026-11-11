@@ -14,6 +14,9 @@ pub struct DampingCoefficients {
 pub struct KeysStringDesign {
     pub speaking_length: f64,
     pub core_radius: f64,
+    /// Effective radius used for bending stiffness (wound strings: larger than core).
+    /// Mass and axial stiffness still use `core_radius`.
+    pub bending_radius: f64,
     pub material_density: f64,
     pub youngs_modulus: f64,
     pub static_tension: f64,
@@ -63,8 +66,10 @@ impl KeysString {
     #[inline]
     pub fn new(design: KeysStringDesign, lateral_offset: f64, relative_detune: f64) -> Self {
         let radius_squared = design.core_radius * design.core_radius;
+        let bending_radius_squared = design.bending_radius * design.bending_radius;
         let linear_mass_density = design.material_density * PI * radius_squared;
-        let bending_stiffness = design.youngs_modulus * PI * radius_squared * radius_squared * 0.25;
+        let bending_stiffness =
+            design.youngs_modulus * PI * bending_radius_squared * bending_radius_squared * 0.25;
         let axial_stiffness = design.youngs_modulus * PI * radius_squared;
 
         let detune_factor = 1.0 + relative_detune;

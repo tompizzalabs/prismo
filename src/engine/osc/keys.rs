@@ -191,7 +191,7 @@ impl Piano {
 
         let soundboard = Soundboard::new(&SoundboardDesign {
             mode_count: 56,
-            lowest_mode_frequency: 70.0,
+            lowest_mode_frequency: 20.0,
             highest_mode_frequency: 4000.0,
             random_seed: configuration.random_seed,
         });

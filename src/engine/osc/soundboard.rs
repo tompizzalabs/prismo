@@ -36,10 +36,13 @@ impl Soundboard {
         let last_applied_modal_forces = vec![0.0; mode_count];
 
         for mode_index in 0..mode_count {
-            let frequency = design.lowest_mode_frequency
-                + (mode_index as f64 + random.f64())
-                    * (design.highest_mode_frequency - design.lowest_mode_frequency)
-                    / mode_count as f64;
+            // Logarithmically spaced modes: real soundboards have dense low-frequency modes
+            // (supporting A0-F2 fundamentals) and sparser high ones. Linear spacing left the
+            // entire sub-100 Hz band nearly empty, starving bass notes of board support.
+            let log_lowest = design.lowest_mode_frequency.max(1.0).ln();
+            let log_highest = design.highest_mode_frequency.max(1.0).ln();
+            let log_fraction = (mode_index as f64 + random.f64()) / mode_count as f64;
+            let frequency = (log_lowest + (log_highest - log_lowest) * log_fraction).exp();
             let angular_frequency = 2.0 * PI * frequency;
             let damping_ratio = uniform(&mut random, 0.02, 0.06) * (1.0 + frequency / 2500.0);
             let modal_mass = uniform(&mut random, 0.3, 1.2);

@@ -117,8 +117,21 @@ pub fn note_design(
     };
 
     let tension = linear_interpolation(750.0, 550.0, note_fraction) * length_scale * length_scale;
+    // Preserve the exact linear mass density required to hit the stretched fundamental.
+    // The plain-steel floor is removed: bass/mid strings are modeled as wound strings whose
+    // effective (average) density is legitimately lower than solid steel. Flooring it at 7850
+    // distorted the produced frequency by up to ~100 cents around notes 43-53.
     let linear_mass_density = tension / (2.0 * speaking_length * fundamental_frequency).powi(2);
-    let effective_density = (linear_mass_density / (PI * core_radius * core_radius)).max(7850.0);
+    let effective_density =
+        (linear_mass_density / (PI * core_radius * core_radius)).max(1500.0);
+
+    // Wound strings have a much larger bending radius than their core: the copper wrap adds
+    // bending stiffness without contributing to the core's axial stiffness. This restores the
+    // strong bass inharmonicity (beta ~ 1e-3 low down) that real pianos exhibit, tapering to a
+    // plain string above ~note 50.
+    let winding_amount = (1.0 - (note as f64 - 21.0) / 29.0).clamp(0.0, 1.0);
+    let winding_thickness = winding_amount.powf(1.2) * 0.8e-3;
+    let bending_radius = core_radius + winding_thickness;
 
     let highest_modeled_frequency = (24.0 * fundamental_frequency)
         .min(8000.0)
@@ -127,6 +140,7 @@ pub fn note_design(
     let string = KeysStringDesign {
         speaking_length,
         core_radius,
+        bending_radius,
         material_density: effective_density,
         youngs_modulus: 2.0e11,
         static_tension: tension,
@@ -187,11 +201,16 @@ pub fn note_design(
         1500.0 * 30.0_f64.powf((controls.hammer_tone.clamp(-1.0, 1.0) + 1.0) * 0.5);
 
     let unison_width = controls.unison_width.clamp(0.0, 20.0);
-    let unison_relative_detunes = [-1.2, 0.4, 1.0].map(|detune| detune * unison_width * 1.0e-4);
+    // Bass fundamentals beat too slowly to read as a unison when the detune is the same in cents,
+    // so spread the low/mid strings further apart. Ramp of ~3x at note 21 down to 1x by note 45.
+    let low_register_unison_boost =
+        1.0 + ((45.0 - note as f64) / 24.0).clamp(0.0, 1.0) * 2.0;
+    let unison_relative_detunes = [-1.2, 0.4, 1.0]
+        .map(|detune| detune * unison_width * 1.0e-4 * low_register_unison_boost);
 
-    let number_of_unison_strings = if note < 33 {
+    let number_of_unison_strings = if note < 28 {
         1
-    } else if note < 45 {
+    } else if note < 41 {
         2
     } else {
         3
@@ -245,7 +264,7 @@ impl Instrument {
 
         let soundboard = Soundboard::new(&SoundboardDesign {
             mode_count: 56,
-            lowest_mode_frequency: 70.0,
+            lowest_mode_frequency: 20.0,
             highest_mode_frequency: 4000.0,
             random_seed,
         });
