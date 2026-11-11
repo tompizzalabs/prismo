@@ -4,6 +4,7 @@
 use std::f64::consts::PI;
 
 use crate::engine::math::vector::Vector3;
+use crate::engine::noise::NoiseEngine;
 use crate::engine::osc::hammer::{Hammer, HammerGeometry};
 use crate::engine::osc::modal::ModalOscillator;
 use crate::engine::osc::strings::KeysString;
@@ -93,10 +94,10 @@ impl PianoVoice {
 
         PianoVoice {
             strike_velocity: 0.0,
-            release_noise_seconds_remaining: 0.0,
-            release_noise_amplitude: 0.0,
-            release_noise_filter_state: 0.0,
-            release_noise_random_state: 0x2545_F491_4F6C_DD15,
+            noise: NoiseEngine::new(
+                design.voicing.hammer_noise_amplitude,
+                design.voicing.hammer_noise_cutoff_hz,
+            ),
             strings,
             hammer,
             previous_felt_compressions,
@@ -106,11 +107,6 @@ impl PianoVoice {
             reference_lateral_offset,
             hammer_force_scales,
             damper_decay_per_step: 1.0,
-            hammer_noise_seconds_remaining: 0.0,
-            hammer_noise_amplitude: design.voicing.hammer_noise_amplitude,
-            hammer_noise_cutoff_hz: design.voicing.hammer_noise_cutoff_hz,
-            hammer_noise_filter_state: 0.0,
-            hammer_noise_random_state: 1,
             note_age_seconds: 0.0,
             blooming_envelope: 1.0,
             bridge_coupling_factor: 1.0,
@@ -145,9 +141,7 @@ impl PianoVoice {
 
     /// Whether the voice can be considered finished (no energy and no active noises).
     pub fn is_silent(&self, energy_threshold: f64) -> bool {
-        self.string_energy() < energy_threshold
-            && self.release_noise_seconds_remaining <= 0.0
-            && self.hammer_noise_seconds_remaining <= 0.0
+        self.string_energy() < energy_threshold && !self.noise.is_active()
     }
 
     /// Carry over the string (and duplex resonator) vibration state from another voice,

@@ -4,9 +4,7 @@
 use crate::engine::math::vector::Vector3;
 use crate::engine::osc::soundboard::BridgeState;
 
-use super::constants::{
-    DUPLEX_DRIVE_SCALE, HAMMER_THUMP_BRIDGE_SCALE, MAXIMUM_UNISON_STRINGS,
-};
+use super::constants::{DUPLEX_DRIVE_SCALE, MAXIMUM_UNISON_STRINGS};
 use super::PianoVoice;
 
 impl PianoVoice {
@@ -34,8 +32,7 @@ impl PianoVoice {
             felt_compression_at_step_start[string_index] = compression;
         }
 
-        let hammer_noise_force = self.generate_hammer_noise_force(step_size);
-        let release_noise_force = self.generate_release_noise_force(step_size);
+        let noise_forces = self.noise.advance(step_size);
 
         let mut state_snapshot = Vec::new();
         if sweep_count > 1 {
@@ -73,7 +70,7 @@ impl PianoVoice {
                 forces_on_strings[string_index] = self
                     .hammer
                     .force_on_string_in_string_frame(felt_frame_force, hammer_angle_source)
-                    + hammer_noise_force;
+                    + noise_forces.hammer_on_string;
             }
 
             for string_index in 0..string_count {
@@ -117,13 +114,8 @@ impl PianoVoice {
             bridge_force = voice_bridge_force * self.blooming_envelope;
 
             if sweep_index == last_sweep_index {
-                bridge_force = bridge_force
-                    + Vector3::new(
-                        0.0,
-                        hammer_noise_force.z * 0.25 * HAMMER_THUMP_BRIDGE_SCALE,
-                        hammer_noise_force.z * HAMMER_THUMP_BRIDGE_SCALE,
-                    )
-                    + release_noise_force;
+                bridge_force =
+                    bridge_force + noise_forces.hammer_on_bridge + noise_forces.release_on_bridge;
             }
 
             hammer_angle_source = self.hammer.rotation_angle;

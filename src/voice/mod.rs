@@ -12,6 +12,7 @@ pub use constants::SUB_STEPS_DURING_STRIKE;
 
 use constants::MAXIMUM_UNISON_STRINGS;
 use crate::engine::math::vector::Vector3;
+use crate::engine::noise::NoiseEngine;
 use crate::engine::osc::hammer::Hammer;
 use crate::engine::osc::modal::ModalOscillator;
 use crate::engine::osc::strings::KeysString;
@@ -22,10 +23,7 @@ pub struct PianoVoice {
     pub strings: Vec<KeysString>,
     pub hammer: Hammer,
     strike_velocity: f64,
-    release_noise_seconds_remaining: f64,
-    release_noise_amplitude: f64,
-    release_noise_filter_state: f64,
-    release_noise_random_state: u64,
+    noise: NoiseEngine,
     previous_felt_compressions: [Vector3; MAXIMUM_UNISON_STRINGS],
     felt_contact_references: [Vector3; MAXIMUM_UNISON_STRINGS],
     grazing_contact_angle: f64,
@@ -33,11 +31,6 @@ pub struct PianoVoice {
     reference_lateral_offset: f64,
     hammer_force_scales: [f64; MAXIMUM_UNISON_STRINGS],
     damper_decay_per_step: f64,
-    hammer_noise_seconds_remaining: f64,
-    hammer_noise_amplitude: f64,
-    hammer_noise_cutoff_hz: f64,
-    hammer_noise_filter_state: f64,
-    hammer_noise_random_state: u64,
     note_age_seconds: f64,
     blooming_envelope: f64,
     bridge_coupling_factor: f64,
