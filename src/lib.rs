@@ -14,7 +14,6 @@ use nice_plug::midi::{Channel, Key, VoiceID};
 use nice_plug::prelude::*;
 use nice_plug_egui::{EguiEditor, EguiEditorState, RepaintNotifier};
 
-use crate::engine::math::rng::DeterministicRandom;
 use crate::engine::osc::hammer::HammerGeometry;
 use crate::instrument::{
     Instrument, LiveVoicingControls, SIMULATION_RATE_HZ, SIMULATION_STEP_SIZE,
@@ -335,7 +334,7 @@ impl Prismo {
             .next_internal_voice_id
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             ^ ((note as u64) << 32);
-        let mut strike_randomness = DeterministicRandom::new(noise_seed);
+        let mut strike_randomness = fastrand::Rng::with_seed(noise_seed);
 
         let (noise_minimum, noise_maximum) = ordered_range(
             self.params.hammer_noise_min.value() as f64,
@@ -347,9 +346,9 @@ impl Prismo {
         );
 
         let hammer_noise_level =
-            noise_minimum + (noise_maximum - noise_minimum) * strike_randomness.unit_interval();
+            noise_minimum + (noise_maximum - noise_minimum) * strike_randomness.f64();
         let unison_width_level =
-            unison_minimum + (unison_maximum - unison_minimum) * strike_randomness.unit_interval();
+            unison_minimum + (unison_maximum - unison_minimum) * strike_randomness.f64();
 
         let strike_controls = StrikeVoicingControls {
             hammer_hardness: self.params.hammer_hardness.value() as f64,

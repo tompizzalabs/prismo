@@ -1,0 +1,396 @@
+// TODO: http://large.stanford.edu/courses/2007/ph210/otey2/
+
+ditty.bpm = 120;
+
+// === Required extras for the vl1 ===
+
+// Delay line
+class Dly {
+    constructor(len) {
+        this.idx = 0;
+        this.line = new Float32Array(Math.max(len || ditty.sampleRate, 1));
+    }
+    put(i) {
+        this.line[this.idx] = i;
+        this.idx += 1;
+        while (this.idx >= this.line.length) this.idx -= this.line.length;
+    }
+    read(offset) {
+        let i = Math.min(offset|0, this.line.length - 1);
+        if (this.idx - 1 < i) i -= this.line.length;
+
+        // sample relative to where the write head is
+        return this.line[this.idx - i - 1];
+    }
+    tap(time) {
+        // fractional and whole offsets
+        const offset = time * ditty.sampleRate;
+        const fo = offset - (offset|0);
+        const wo = offset|0;
+
+        // sample the line
+        const s1 = this.read(wo);
+        const s2 = this.read(wo + 1);
+
+        // TODO: improve in this with hermite interpolation
+        // https://github.com/sourcebox/mi-plaits-dsp-rs/blob/master/src/utils/delay_line.rs
+
+        // interpolate between samples to correct for the frequency
+        return s1 * (1 - fo) + s2 * fo;
+    }
+    allpass(i, time, a) {
+        // use this delay line as a long schroeder allpass
+        const res = this.tap(time) + a * i;
+        this.put(i - a * res);
+        return res;
+    }
+}
+
+
+// One pole lowpass filter
+class Lp1 {
+    constructor() { this.f = 0; }
+    tick(i, cutoff) {
+        const a = Math.exp(-2 * Math.PI * ditty.dt * cutoff);
+        return this.f += (i - this.f) * (1 - a);
+    }
+}
+
+// One pole highpass filter
+class Hp1 {
+    constructor() { this.f = 0; }
+    tick(i, cutoff) {
+        const a = Math.exp(-2 * Math.PI * ditty.dt * cutoff);
+        this.f += (i - this.f) * (1 - a);
+        return i - this.f;
+    }
+}
+
+// One pole allpass filter
+class Ap1 {
+    constructor() { this.f = 0; }
+    tick(i, a) {
+        const res = this.f + a * i;
+        this.f = i - a * res;
+        return res;
+    }
+}
+
+// Reverb for the piano body
+class Reverb {
+    constructor() {
+        // outside params
+        const a = -0.25;
+
+        // set up reverb
+        const lens = [37, 87, 181, 271, 359, 592, 687, 721];
+        const aa = [a, 1+a, a, a, a, a, a, a];
+
+        this.delays = lens.map(l => new Float32Array(l));
+        this.delaytaps = new Array(8).fill(0);
+        this.o = new Float32Array(8).fill(0);
+        this.b = new Float32Array(8).fill(0);
+        this.c = new Float32Array(8).fill(0);
+
+        this.a = new Array(8).fill(8).map(l => new Float32Array(l));
+
+        this.f = new Float32Array(8).fill(0);
+        this.fa = new Float32Array(8).fill(0);
+
+        for (let k = 0; k < 8; k++) {
+            this.o[k] = 0;
+            this.b[k] = 1;
+            this.c[k] = k < 8 ? ((k%2 == 0) ? 1/8 : -1/8) : 0;
+
+            this.fa[k] = Math.exp(-2 * Math.PI * ditty.dt * (ditty.sampleRate / lens[k]));
+        }
+
+        for (let j = 0; j < 8; j++)
+        for (let k = 0; k < 8; k++) {
+            this.a[j][k] = aa[(8+(k-j))%8];
+        }
+    }
+
+    tick(s) {
+        const i = new Float32Array(8).fill(0);
+
+        for (let j = 0; j < 8; j++) {
+            i[j] = this.b[j] * s;
+            for (let k = 0; k < 8; k++) i[j] += this.a[j][k] * this.o[k];
+        }
+
+        let out = 0;
+        for (let j = 0; j < 8; j++) {
+            // read delay
+            const d = this.delays[j][this.delaytaps[j]];
+            this.delays[j][this.delaytaps[j]] = i[j];
+            this.delaytaps[j] = (this.delaytaps[j] + 1) % this.delays[j].length;
+
+            // apply filter
+            this.f[j] += (1 - this.fa[j]) * (d - this.f[j])
+            this.o[j] = this.f[j];
+
+            // out
+            out += this.c[j] * this.o[j] * 0.5;
+        }
+
+        return out;
+    }
+}
+
+// === vl1 ===
+
+// tiny VL-1 emulator
+const vl1 = synth.def(class {
+    constructor(options) {
+        this.i = 0; // index into the waveguides
+        this.d1 = new Float32Array(ditty.sampleRate); // left string
+        this.d2 = new Float32Array(ditty.sampleRate); // right string
+        this.l1 = 0; this.l2 = 0; // lowpass filters in the string
+        this.h1 = 0; this.h2 = 0; // highpass filters in the string
+        this.p = 0; // impulse length
+        this.r = 0; // index into the reverb
+        this.rd = new Float32Array(ditty.sampleRate); // reverb delay
+        this.rt = new Float32Array(16).map(Math.random); // reverb delay times
+
+        this.rv = new Reverb();
+    }
+    process(note, env, tick, options) {
+        // === setup ===
+        // TODO read parameters from env
+        const freq = midi_to_hz(note) / 2;
+        const on = options.duration > tick; // note on?
+        const la = Math.exp(-2 * Math.PI * ditty.dt * (freq * 16 + 4180)); // lowpass cutoff parameter
+        const ha = Math.exp(-2 * Math.PI * ditty.dt * 10); // highpass cutoff parameter
+        const lb = 0.2; // lowpass blend
+        const hb = 0.1; // highpass blend
+        const len = ditty.sampleRate / freq; // length of the delay in samples
+        const ilen = len|0; // integer delay
+        const flen = len%1; // fractional delay
+        // === read waveguides ===
+        const imp = this.p++ > len ? 0.0 : Math.random() * 2 - 1; // impulse
+        const t1 = lerp(
+            this.d1[(this.i + ilen + 0) % this.d1.length],
+            this.d1[(this.i + ilen + 1) % this.d1.length],
+            flen
+        ); // left delay sample
+        const t2 = lerp(
+            this.d2[(this.i + ilen + 0) % this.d2.length],
+            this.d2[(this.i + ilen + 1) % this.d2.length],
+            flen
+        ); // right delay sample
+        // === feedback ====
+        this.i = this.i <= 0 ? ditty.sampleRate - 1 : this.i - 1; // update delay write position
+        this.l1 += (1 - la) * (t1 - this.l1); // left lowpass (one pole)
+        this.l2 += (1 - la) * (t2 - this.l2); // right lowpass (one pole)
+        const l1 = lerp(t1, this.l1, lb); // left lowpass output
+        const l2 = lerp(t2, this.l2, lb); // right lowpass output
+        this.h1 += (1 - ha) * (l1 - this.h1); // left highpass (one pole)
+        this.h2 += (1 - ha) * (l2 - this.h2); // right highpass (one pole)
+        const h1 = lerp(l1, this.l1 - this.h1, hb); // left highpass result
+        const h2 = lerp(l2, this.l2 - this.h2, hb); // right highpass result
+        // TODO allpass/dispersion
+        // TODO delay compensation
+        // === write waveguides ===
+        this.d1[this.i] = (on ? 1 : 0.9) * (h1 + imp); // feedback, left
+        this.d2[this.i] = (on ? 1 : 0.9) * (h2 + imp); // feedback, right
+        // === read reverb ===
+        let rs = 0;
+        for (const rt of this.rt) {
+            rs += this.rd[(this.r + (rt * 1e-2 * ditty.sampleRate)|0) % this.rd.length] * 0.25;
+        }
+        // === write reverb ===
+        // this is an incredibly shitty reverb and does not give me piano sounds
+        // idk HOW they did it but http://large.stanford.edu/courses/2007/ph210/otey2/
+        // has a reverb that hardcarries the entire sound
+        // I am quite certain it's possible to replace their strings with discrete summation formulas
+        // and get the same results with reasonable ease
+        this.r = this.r <= 0 ? ditty.sampleRate - 1 : this.r - 1;
+        this.rd[this.i] = 0.5 * (this.l1 + this.l2) - 0.3 * rs;
+
+        // TODO: body
+        // TODO: hammer/reed/bow
+        // TODO: nonlinear
+        // TODO: dispersion
+        // TODO: env to properly time and attenuate the note
+        const dry = 0.5 * this.l1 + 0.5 * this.l2;
+        return lerp(dry, this.rv.tick(dry) * 24, input.wet);//lerp(0.5 * this.l1 + 0.5 * this.l2, rs, input.wet); // output
+    }
+}, {});
+
+// a bigger one
+const vl2 = synth.def(class {
+    constructor(options) {
+        this.freq = midi_to_hz(options.note);
+
+        // impulse and filter
+        this.i = 0;
+        this.if = new Lp1();
+
+        // waveguides, two makes for a nice detune
+        this.dly = [new Dly(), new Dly()]; // line
+        this.lpf = [new Lp1(), new Lp1()]; // lowpass for the line
+        this.hpf = [new Hp1(), new Hp1()]; // highpass for the line
+        this.apf = [new Ap1(), new Ap1()]; // inharmonicity for the line
+        this.cor = [new Ap1(), new Ap1()]; // frequency correction filter
+
+        // soundboard/instrument body
+        this.bodyDly = new Array(8).fill(0).map(() => new Dly()); // delay lines
+        this.bodyLen = [37, 87, 181, 271, 359, 592, 687, 721].map(x => x / 44100); // delay times
+        this.bodyLp1 = new Array(8).fill(0).map(() => new Lp1()); // loss filter
+        this.bodyOut = new Array(8).fill(0); // previous outputs
+
+        // delay line for stereo widen with the haas effect
+        this.stereo = new Dly(ditty.sampleRate * 3e-3);
+    }
+    process(note, env, tick, options) {
+        const detune = options.detune ?? 0.001;
+        // impulse
+        // TODO: replace with better
+        let imp = this.i++ < ditty.sampleRate / this.freq ? Math.random() * 2 - 1 : 0;
+        imp = this.if.tick(imp, this.freq * 4) * 1;
+
+        // waveguide
+        // TODO: two strings?
+        let wout = 0;
+        for (let i = 0; i < 2; i++) {
+            let fb = this.dly[i].tap([1 - detune, 1 + detune][i] / this.freq);
+            fb = this.lpf[i].tick(fb, this.freq * 16 + 4800);
+            fb = this.hpf[i].tick(fb, 10);
+            fb = this.apf[i].tick(fb, 1);
+            fb = this.cor[i].tick(fb, 1);
+            this.dly[i].put(fb + imp);
+            wout += fb * 0.5;
+            debug.probe("string " + i, fb * 2, 1, [1 - detune, 1 + detune][i] / this.freq * 8);
+        }
+
+        // instrument body
+        let bout = 0;
+        let sout = 0;
+        for (let i = 0; i < 8; i++) {
+            this.bodyOut[i] = this.bodyDly[i].tap(this.bodyLen[i]);
+            this.bodyOut[i] = this.bodyLp1[i].tick(this.bodyOut[i], 1 / this.bodyLen[i]);
+            bout += this.bodyOut[i];
+            sout += this.bodyOut[i] * [1, -1][i&1];
+        }
+
+        for (let i = 0; i < 8; i++) {
+            // feedback
+            // input + previous delay line - 0.25 * all other delay lines
+            // TODO fix
+            //this.bodyDly[i].put(wout + 0.75 * this.bodyOut[i]);
+            this.bodyDly[(i + 1) % 8].put(wout + 0.75 * this.bodyOut[i] - 0.25 * (bout /*- this.bodyOut[(i + 1) % 8]*/));
+        }
+
+        debug.probe("board", bout * 4, 1, 1 / this.freq * 8);
+
+        // mix
+        const mout = sout * options.wet + (1 - options.wet) * wout;
+
+        // stereo widen
+        // TODO: proper
+        this.stereo.put(mout);
+        return [mout, this.stereo.tap(3e-3)];
+    }
+}, { detune: () => input.detune, wet: () => input.wet });
+
+// === Instrument settings ===
+input.detune = 0.001; // min=0,max=0.01,step=0.0001
+input.wet = 1; // min=0,max=1, step=0.01
+
+// === Song utils ===
+// play one or more notes at a time
+function playOne(instr, duration, ...notes) {
+    for (let note of notes) {
+        // if it's one note, make it an array of one note
+        if (!Array.isArray(note)) note = [note];
+
+        // play the notes
+        for (let i = 0; i < notes.length; ++i) {
+            // but only if the note has a higher than 0 frequency
+            if (note[i] > 0) {
+                instr.play(note[i], { duration: duration });
+            }
+        }
+
+        // no altered duration here
+        sleep(duration);
+    }
+}
+
+// play one or more notes with an alternating pattern
+function playAlt(instr, duration, alt, ...notes) {
+    for (let note of notes) {
+        // if it's one note, make it an array of one note
+        if (!Array.isArray(note)) note = [note];
+
+        // play the notes
+        for (let i = 0; i < notes.length; ++i) {
+            // but only if the note has a higher than 0 frequency
+            if (note[i] > 0) {
+                instr.play(note[i], { duration: duration });
+            }
+        }
+
+        // no altered duration here
+        sleep(duration);
+
+        // play the alternating note
+        if (alt > 0) instr.play(alt, { duration: duration });
+        sleep(duration);
+    }
+}
+
+// === Song ===
+ditty.bpm = 140;
+
+// Song loops
+function order_intro(instr) {
+    playOne(instr, 1/2, e2, b2, e3, b3, e3, b2);
+    playOne(instr, 1/2, e2, b2, e3, b3, e3, b2);
+
+    playOne(instr, 1/2, e2, c3, e3, c4, e3, c3);
+    playOne(instr, 1/2, e2, c3, e3, c4, e3, c3);
+}
+
+function thunderstruck(instr) {
+    for (let i = 0; i < 8; i++) playAlt(instr, 1/4, b4, ds5, fs5);
+    for (let i = 0; i < 8; i++) playAlt(instr, 1/4, b4, e5, g5);
+    for (let i = 0; i < 8; i++) playAlt(instr, 1/4, b4, ds5, fs5);
+    for (let i = 0; i < 8; i++) playAlt(instr, 1/4, b4, e5, g5);
+    for (let i = 0; i < 4; i++) playAlt(instr, 1/4, b4, b5, a5, gs5, a5, gs5, e5, fs5, ds5, e5, ds5, e5, ds5, e5, fs5, e5, ds5);
+
+}
+
+function tenebre_rosso_sangue(instr) {
+    for (let i = 0; i < 3; i++) {
+        playOne(instr, 1/2, cs5, gs4, gs5, cs5, fs5, cs5, gs5, cs5);
+        playOne(instr, 1/2, e5, cs5, gs5, cs5, ds5, cs5, gs4, c5);
+    }
+
+    playOne(instr, 1/2, cs5, gs4, gs5, gs4, e5, gs4, gs5, gs4);
+    playOne(instr, 1/2, ds5, gs4, cs5, gs4, c5, gs4, c5, gs4);
+}
+
+// Loop
+loop(() => {
+    vl1.play(a1, { duration: 5 });
+    sleep(3);
+    vl1.play(a2, { duration: 5 });
+    sleep(3);
+    vl1.play(a3, { duration: 5 });
+    sleep(3);
+    vl1.play(a4, { duration: 5 });
+    sleep(3);
+    vl1.play(a5, { duration: 5 });
+    sleep(3);
+    vl1.play(a6, { duration: 5 });
+    sleep(3);
+    vl1.play(a7, { duration: 5 });
+    sleep(3);
+
+    tenebre_rosso_sangue(vl1);
+    thunderstruck(vl1);
+    order_intro(vl1);
+    sleep(5);
+}, { name: 'VL-1' });

@@ -1,5 +1,5 @@
 use super::modal::ModalOscillator;
-use crate::engine::math::{rng::DeterministicRandom, vector::Vector3};
+use crate::engine::math::vector::Vector3;
 use std::f64::consts::PI;
 
 pub struct SoundboardDesign {
@@ -25,7 +25,7 @@ pub struct Soundboard {
 
 impl Soundboard {
     pub fn new(design: &SoundboardDesign) -> Self {
-        let mut random = DeterministicRandom::new(design.random_seed);
+        let mut random = fastrand::Rng::with_seed(design.random_seed);
         let mode_count = design.mode_count.max(1);
 
         let mut modes = Vec::with_capacity(mode_count);
@@ -33,17 +33,16 @@ impl Soundboard {
         let mut horizontal_bridge_coupling = Vec::with_capacity(mode_count);
         let mut longitudinal_bridge_coupling = Vec::with_capacity(mode_count);
         let mut volume_displacement_coupling = Vec::with_capacity(mode_count);
-        let mut last_applied_modal_forces = vec![0.0; mode_count];
+        let last_applied_modal_forces = vec![0.0; mode_count];
 
         for mode_index in 0..mode_count {
             let frequency = design.lowest_mode_frequency
-                + (mode_index as f64 + random.unit_interval())
+                + (mode_index as f64 + random.f64())
                     * (design.highest_mode_frequency - design.lowest_mode_frequency)
                     / mode_count as f64;
-
             let angular_frequency = 2.0 * PI * frequency;
-            let damping_ratio = random.uniform(0.02, 0.06) * (1.0 + frequency / 2500.0);
-            let modal_mass = random.uniform(0.3, 1.2);
+            let damping_ratio = uniform(&mut random, 0.02, 0.06) * (1.0 + frequency / 2500.0);
+            let modal_mass = uniform(&mut random, 0.3, 1.2);
 
             modes.push(ModalOscillator::new(
                 angular_frequency,
@@ -52,25 +51,18 @@ impl Soundboard {
             ));
 
             let low_frequency_weight = (-frequency / 700.0).exp();
-
             vertical_bridge_coupling.push(
-                random.random_sign()
-                    * (0.10 + 0.80 * low_frequency_weight * random.unit_interval()),
+                random_sign(&mut random) * (0.10 + 0.80 * low_frequency_weight * random.f64()),
             );
-
             horizontal_bridge_coupling.push(
-                random.random_sign()
-                    * (0.04 + 0.30 * low_frequency_weight * random.unit_interval()),
+                random_sign(&mut random) * (0.04 + 0.30 * low_frequency_weight * random.f64()),
             );
-
             longitudinal_bridge_coupling.push(
-                random.random_sign()
-                    * (0.01 + 0.05 * low_frequency_weight * random.unit_interval()),
+                random_sign(&mut random) * (0.01 + 0.05 * low_frequency_weight * random.f64()),
             );
-
             volume_displacement_coupling.push(
-                random.random_sign()
-                    * (0.02 + 0.30 * (-frequency / 500.0).exp() * random.unit_interval()),
+                random_sign(&mut random)
+                    * (0.02 + 0.30 * (-frequency / 500.0).exp() * random.f64()),
             );
         }
 
@@ -182,4 +174,14 @@ impl Soundboard {
 
         self.last_applied_modal_forces.fill(0.0);
     }
+}
+
+#[inline]
+fn uniform(random: &mut fastrand::Rng, minimum: f64, maximum: f64) -> f64 {
+    minimum + (maximum - minimum) * random.f64()
+}
+
+#[inline]
+fn random_sign(random: &mut fastrand::Rng) -> f64 {
+    if random.bool() { 1.0 } else { -1.0 }
 }

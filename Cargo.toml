@@ -7,13 +7,13 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-nice-plug = { version = "0.4.0", features = [
+nice-plug = { version = "0.4.2", features = [
     "assert_process_allocs",
 ] }
-nice-plug-egui = "0.5.0"
-egui = "0.36.2"
+nice-plug-egui = "0.6.0"
+egui = "0.37.0"
 atomic_float = "1.1"
-rand = "0.10.2"
+fastrand = "2.5.0"
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
