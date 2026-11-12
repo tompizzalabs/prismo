@@ -18,7 +18,7 @@ impl PianoVoice {
         self.hammer.angular_velocity = hammer_velocity / compression_rate_per_radian.max(1.0e-9);
         self.strike_velocity = hammer_velocity;
         self.damper_decay_per_step = 1.0;
-        self.noise.begin_strike(noise_seed);
+        self.noise.begin_strike(noise_seed, hammer_velocity);
         self.note_age_seconds = 0.0;
         self.blooming_envelope = 1.0;
     }

@@ -148,11 +148,11 @@ pub fn note_design(
         highest_modeled_frequency,
         maximum_transverse_mode_count: 48,
         vertical_damping: DampingCoefficients {
-            constant_part: 4.0e-4,
-            stiffness_proportional_part: 6.0e-8,
+            constant_part: 2.2e-4,
+            stiffness_proportional_part: 5.5e-8,
         },
         horizontal_damping: DampingCoefficients {
-            constant_part: 1.5e-4,
+            constant_part: 0.9e-4,
             stiffness_proportional_part: 2.5e-8,
         },
         longitudinal_damping: DampingCoefficients {
@@ -543,5 +543,220 @@ mod output_level_tests {
                 report.mastered_peak
             );
         }
+    }
+
+    // Measure the envelope of a single note: windowed RMS across its life, in dB
+    // relative to the loudest window. This shows the attack and decay shape.
+    fn measure_envelope(label: &str, note: u8, velocity: f32) {
+        let geometry = shared_hammer_geometry();
+        let mut voices: [Option<SynthVoice>; 8] = [0; 8].map(|_| None);
+        voices[0] = Some(make_voice(note, velocity, 0, geometry));
+        let mut instrument = Instrument::new(20240903);
+
+        // Window boundaries in seconds (relative to note start).
+        let windows: &[f64] = &[0.0, 0.02, 0.1, 0.4, 1.0, 2.0, 3.5, 5.5];
+        let mut rms: Vec<f64> = vec![0.0; windows.len() - 1];
+        let mut counts: Vec<u64> = vec![0; windows.len() - 1];
+        let mut total_seconds = 0.0f64;
+        let duration = 5.5;
+
+        let dt = SIMULATION_STEP_SIZE;
+        while total_seconds < duration {
+            let (left, right) = instrument.step(&mut voices);
+            // Absolute (full-scale) sample magnitude; unaffected by limiter.
+            let magnitude = (left * left + right * right).sqrt();
+            let mut window = windows.len() - 2;
+            for (index, &boundary) in windows.iter().enumerate().skip(1) {
+                if total_seconds < boundary {
+                    window = index - 1;
+                    break;
+                }
+            }
+            rms[window] += magnitude * magnitude;
+            counts[window] += 1;
+            total_seconds += dt;
+        }
+
+        let mut peak_db: Vec<f64> = Vec::with_capacity(rms.len());
+        for (index, sum) in rms.iter().enumerate() {
+            let value = (sum / counts[index].max(1) as f64).sqrt();
+            peak_db.push(20.0 * value.max(1.0e-12).log10());
+        }
+        let reference = peak_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        println!("\n{} (note {}, vel {}): envelope windows (dB rel. to loudest window):", label, note, velocity);
+        for index in 0..peak_db.len() {
+            let start = windows[index];
+            let end = windows[index + 1];
+            println!("  {:>5.2}-{:<5.2}s: {:>7.1} dB", start, end, peak_db[index] - reference);
+        }
+    }
+
+    #[test]
+    fn print_envelope() {
+        println!("\n=== ENVELOPE / DECAY SHAPE ===");
+        println!("(This is the pre-master signal, shapes unaffected by output trim/limiter.)");
+        measure_envelope("A4 fortissimo", 69, 1.0);
+        measure_envelope("C2 fortissimo", 36, 1.0);
+        measure_envelope("C6 fortissimo", 84, 1.0);
+        measure_envelope("C6 piano", 84, 0.2);
+        measure_envelope("A0 long", 21, 0.8);
+    }
+
+    // Simple one-pole low/high-pass helpers for band analysis.
+    #[inline]
+    fn one_pole_lp(input: f64, state: &mut f64, coefficient: f64) -> f64 {
+        *state += coefficient * (input - *state);
+        *state
+    }
+
+    // Per-frequency-band envelope: uses single-pole filters to split the output
+    // into low (<400 Hz), mid (400-1600 Hz) and high (>1600 Hz) bands, then
+    // reports each band's windowed RMS relative to its own loudest window. This
+    // exposes the frequency-dependent decay that separates a piano (long warm
+    // low sustain) from a harp/ukulele (bright, short).
+    fn measure_spectral_envelope(label: &str, note: u8, velocity: f32) {
+        let geometry = shared_hammer_geometry();
+        let mut voices: [Option<SynthVoice>; 8] = [0; 8].map(|_| None);
+        voices[0] = Some(make_voice(note, velocity, 0, geometry));
+        let mut instrument = Instrument::new(20240903);
+
+        let windows: &[f64] = &[0.0, 0.03, 0.2, 0.7, 1.5, 3.0, 5.0];
+        let mut lows: Vec<f64> = vec![0.0; windows.len() - 1];
+        let mut mids: Vec<f64> = vec![0.0; windows.len() - 1];
+        let mut highs: Vec<f64> = vec![0.0; windows.len() - 1];
+        let mut counts: Vec<u64> = vec![0; windows.len() - 1];
+
+        let dt = SIMULATION_STEP_SIZE;
+        let low_a = 1.0 - (-2.0 * PI * 400.0 * dt).exp();
+        let mid_a = 1.0 - (-2.0 * PI * 1600.0 * dt).exp();
+
+        let mut lp400 = 0.0f64;
+        let mut lp1600 = 0.0f64;
+        let mut total_seconds = 0.0f64;
+        while total_seconds < 5.0 {
+            let (left, right) = instrument.step(&mut voices);
+            let sample = (left + right) * 0.5;
+            lp400 = one_pole_lp(sample, &mut lp400, low_a);
+            lp1600 = one_pole_lp(sample, &mut lp1600, mid_a);
+            // Band-pass approximations.
+            let low_band = lp400;
+            let mid_band = lp1600 - lp400;
+            let high_band = sample - lp1600;
+
+            let mut window = windows.len() - 2;
+            for (index, &boundary) in windows.iter().enumerate().skip(1) {
+                if total_seconds < boundary {
+                    window = index - 1;
+                    break;
+                }
+            }
+            lows[window] += low_band * low_band;
+            mids[window] += mid_band * mid_band;
+            highs[window] += high_band * high_band;
+            counts[window] += 1;
+            total_seconds += dt;
+        }
+
+        let to_db = |band: &[f64]| -> Vec<f64> {
+            band.iter()
+                .enumerate()
+                .map(|(i, sum)| 20.0 * ((sum / counts[i].max(1) as f64).sqrt().max(1.0e-12)).log10())
+                .collect()
+        };
+        let low_db = to_db(&lows);
+        let mid_db = to_db(&mids);
+        let high_db = to_db(&highs);
+        let rel = |band_db: &[f64]| -> Vec<f64> {
+            let ref_peak = band_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            band_db.iter().map(|v| v - ref_peak).collect()
+        };
+
+        println!("\n{} (note {}, vel {}): band envelopes, dB rel. to each band's loudest window [low <400Hz | mid 400-1600 | high >1600Hz]:", label, note, velocity);
+        let low_rel = rel(&low_db);
+        let mid_rel = rel(&mid_db);
+        let high_rel = rel(&high_db);
+        for i in 0..low_rel.len() {
+            let start = windows[i];
+            let end = windows[i + 1];
+            println!(
+                "  {:>5.2}-{:<5.2}s:  L {:>7.1}  M {:>7.1}  H {:>7.1}",
+                start, end, low_rel[i], mid_rel[i], high_rel[i]
+            );
+        }
+    }
+
+    #[test]
+    fn print_spectral_envelope() {
+        println!("\n=== SPECTRAL ENVELOPE (per-band decay) ===");
+        measure_spectral_envelope("A4 fortissimo", 69, 1.0);
+        measure_spectral_envelope("C2 fortissimo", 36, 1.0);
+        measure_spectral_envelope("C4 mezzo", 60, 0.5);
+        measure_spectral_envelope("C6 fortissimo", 84, 1.0);
+    }
+
+    // Measure the actual string partial amplitudes over time (per vertical mode),
+    // the physical ground truth of string sustain. Reports each partial's
+    // amplitude envelope in dB relative to its own peak.
+    fn measure_string_partials(label: &str, note: u8, velocity: f32) {
+        let geometry = shared_hammer_geometry();
+        let mut voices: [Option<SynthVoice>; 8] = [0; 8].map(|_| None);
+        voices[0] = Some(make_voice(note, velocity, 0, geometry));
+        let mut instrument = Instrument::new(20240903);
+
+        // Windows in seconds.
+        let windows: &[f64] = &[0.0, 0.1, 0.5, 1.0, 2.0, 4.0];
+        let partial_count = voices[0].as_ref().unwrap().engine.strings[0]
+            .vertical_modes
+            .len()
+            .min(12);
+        let mut energy: Vec<Vec<f64>> = vec![vec![0.0; windows.len() - 1]; partial_count];
+        let mut counts: Vec<u64> = vec![0; windows.len() - 1];
+        let mut total_seconds = 0.0f64;
+
+        while total_seconds < 4.0 {
+            instrument.step(&mut voices);
+            // Take the first (primary) unison string's vertical mode displacements.
+            let string = &voices[0].as_ref().unwrap().engine.strings[0];
+            let mut window = windows.len() - 2;
+            for (index, &boundary) in windows.iter().enumerate().skip(1) {
+                if total_seconds < boundary {
+                    window = index - 1;
+                    break;
+                }
+            }
+            for partial in 0..partial_count {
+                let displacement = string.vertical_modes[partial].displacement;
+                energy[partial][window] += displacement * displacement;
+            }
+            counts[window] += 1;
+            total_seconds += SIMULATION_STEP_SIZE;
+        }
+
+        println!("\n{} (note {}, vel {}): string vertical partial T60-ish [dB rel. to each partial's peak]:", label, note, velocity);
+        for partial in 0..partial_count {
+            let mut band_db: Vec<f64> = energy[partial]
+                .iter()
+                .enumerate()
+                .map(|(i, sum)| 20.0 * ((sum / counts[i].max(1) as f64).sqrt().max(1.0e-12)).log10())
+                .collect();
+            let reference = band_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            for value in &mut band_db {
+                *value -= reference;
+            }
+            if (partial + 1) == 1 || (partial + 1) <= 3 || (partial + 1) % 2 == 0 {
+                print!("  p{:>2}:", partial + 1);
+                for value in &band_db {
+                    print!(" {:>7.1}", value);
+                }
+                println!();
+            }
+        }
+    }
+
+    #[test]
+    fn print_string_partials() {
+        println!("\n=== STRING PARTIAL SUSTAIN ===");
+        measure_string_partials("A4 fortissimo", 69, 1.0);
+        measure_string_partials("C2 fortissimo", 36, 1.0);
     }
 }

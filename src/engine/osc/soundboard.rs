@@ -44,8 +44,12 @@ impl Soundboard {
             let log_fraction = (mode_index as f64 + random.f64()) / mode_count as f64;
             let frequency = (log_lowest + (log_highest - log_lowest) * log_fraction).exp();
             let angular_frequency = 2.0 * PI * frequency;
-            let damping_ratio = uniform(&mut random, 0.02, 0.06) * (1.0 + frequency / 2500.0);
-            let modal_mass = uniform(&mut random, 0.3, 1.2);
+            // A real piano soundboard carries the body of the tone: its low modes
+            // ring for ~0.5-1.5 s, with higher modes dying much faster. The old
+            // damping (~0.02-0.06) killed a 120 Hz board mode in ~0.2 s, which is
+            // a big part of why notes decayed like a plucked instrument instead of
+            // a piano.
+            let damping_ratio = uniform(&mut random, 0.005, 0.014) * (1.0 + frequency / 4000.0);            let modal_mass = uniform(&mut random, 0.3, 1.2);
 
             modes.push(ModalOscillator::new(
                 angular_frequency,
@@ -55,7 +59,7 @@ impl Soundboard {
 
             let low_frequency_weight = (-frequency / 700.0).exp();
             vertical_bridge_coupling.push(
-                random_sign(&mut random) * (0.10 + 0.80 * low_frequency_weight * random.f64()),
+                random_sign(&mut random) * (0.11 + 0.85 * low_frequency_weight * random.f64()),
             );
             horizontal_bridge_coupling.push(
                 random_sign(&mut random) * (0.04 + 0.30 * low_frequency_weight * random.f64()),
@@ -65,7 +69,7 @@ impl Soundboard {
             );
             volume_displacement_coupling.push(
                 random_sign(&mut random)
-                    * (0.02 + 0.30 * (-frequency / 500.0).exp() * random.f64()),
+                    * (0.025 + 0.34 * (-frequency / 450.0).exp() * random.f64()),
             );
         }
 
