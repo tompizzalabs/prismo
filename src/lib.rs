@@ -1,5 +1,6 @@
 mod engine;
 mod instrument;
+mod master;
 mod params;
 mod presets;
 mod ui;
@@ -19,6 +20,7 @@ use crate::instrument::{
     Instrument, LiveVoicingControls, SIMULATION_RATE_HZ, SIMULATION_STEP_SIZE,
     StrikeVoicingControls, note_design, shared_hammer_geometry,
 };
+use crate::master::OutputMaster;
 use crate::ui::{EditorSharedState, INITIAL_SCALE_FACTOR, INITIAL_WINDOW_SIZE};
 use crate::voice::{PianoVoice, SynthVoice};
 
@@ -33,6 +35,7 @@ pub struct Prismo {
     editor_state: Arc<EguiEditorState>,
     instrument: Instrument,
     shared_hammer_geometry: HammerGeometry,
+    master: OutputMaster,
     voices: [Option<SynthVoice>; NUM_VOICES],
     next_internal_voice_id: u64,
     held_keys: [bool; 128],
@@ -68,6 +71,7 @@ impl Default for Prismo {
             editor_state: EguiEditorState::from_size(INITIAL_WINDOW_SIZE, INITIAL_SCALE_FACTOR),
             instrument: Instrument::new(20240903),
             shared_hammer_geometry: shared_hammer_geometry(),
+            master: OutputMaster::default(),
             voices: [0; NUM_VOICES].map(|_| None),
             next_internal_voice_id: 0,
             held_keys: [false; 128],
@@ -120,6 +124,7 @@ impl Plugin for Prismo {
 
     fn reset(&mut self) {
         self.instrument.reset();
+        self.master.reset();
         for voice_slot in self.voices.iter_mut() {
             *voice_slot = None;
         }
@@ -141,6 +146,7 @@ impl Plugin for Prismo {
         _context: &mut impl ActivateContext<Self>,
     ) -> bool {
         self.engine_steps_per_output_sample = SIMULATION_RATE_HZ / buffer_config.sample_rate as f64;
+        self.master = OutputMaster::new(buffer_config.sample_rate as f64);
         self.peak_meter_decay_weight = 0.25f64
             .powf((buffer_config.sample_rate as f64 * PEAK_METER_DECAY_MS / 1000.0).recip())
             as f32;
@@ -226,14 +232,16 @@ impl Plugin for Prismo {
                 let (left_engine, right_engine) = self.render_one_output_sample();
                 let gain = self.params.output_gain.smoothed.next();
 
-                let left_sample = left_engine as f32 * gain;
-                let right_sample = right_engine as f32 * gain;
+                let (left_sample, right_sample) = self.master.process(
+                    left_engine as f64 * gain as f64,
+                    right_engine as f64 * gain as f64,
+                );
 
-                output[0][sample_index] = left_sample;
-                output[1][sample_index] = right_sample;
+                output[0][sample_index] = left_sample as f32;
+                output[1][sample_index] = right_sample as f32;
 
                 if self.editor_state.is_open() {
-                    let amplitude = left_sample.abs().max(right_sample.abs());
+                    let amplitude = left_sample.abs().max(right_sample.abs()) as f32;
                     let current_peak = self.peak_meter.load(Ordering::Relaxed);
                     let new_peak = if amplitude > current_peak {
                         amplitude

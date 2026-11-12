@@ -20,7 +20,13 @@ const TARGET_ROOM_MODE_COUNT: usize = 96;
 /// Reflection gain applied to each first-order wall image source.
 const WALL_REFLECTION_COEFFICIENT: f64 = 0.55;
 /// Overall scale of the direct + early reflection field relative to the modal field.
-const DIRECT_FIELD_SCALE: f64 = 1.0;
+///
+/// The direct-field taps carry `rho / (4 * pi * distance)` while the modal field is
+/// normalized by `rho*c^2 / V`. These live on very different scales for the room and
+/// source geometry used here; this constant empirically re-balances the direct/early
+/// field so it sits alongside (rather than dominating) the room modal tail, keeping the
+/// 3-D image audible without blowing out the master.
+const DIRECT_FIELD_SCALE: f64 = 0.08;
 
 pub struct AirRoomDesign {
     pub room_dimensions: Vector3,
@@ -140,9 +146,9 @@ impl AirRoom {
 
             modal_states.push(ComplexModalMode::new(angular_frequency, damping_ratio));
 
-            soundboard_pressure_coefficients.push(2.0 * shape_at_soundboard);
-            listener_pressure_coefficients_left.push(2.0 * shape_at_listener_left);
-            listener_pressure_coefficients_right.push(2.0 * shape_at_listener_right);
+            soundboard_pressure_coefficients.push(shape_at_soundboard);
+            listener_pressure_coefficients_left.push(shape_at_listener_left);
+            listener_pressure_coefficients_right.push(shape_at_listener_right);
 
             let damped_frequency = angular_frequency * (1.0 - damping_ratio * damping_ratio).sqrt();
             let complex_eigenvalue =
@@ -151,7 +157,14 @@ impl AirRoom {
             let projection_denominator = Complex64::new(2.0, 0.0)
                 + complex_eigenvalue * (2.0 * damping_ratio / angular_frequency);
 
-            let pressure_source_scale = density_c2 / room.x * shape_at_soundboard;
+            // Modal source normalization: the standard room-mode radiation
+            // coefficient is rho*c^2 / V (V = room volume), giving the coupling
+            // between a monopole volume-acceleration source at the soundboard
+            // and the room's pressure field. Dividing by the room *volume*
+            // (rather than a single length) keeps the pressure in a sane
+            // physical range.
+            let room_volume = room.x * room.y * room.z;
+            let pressure_source_scale = density_c2 / room_volume * shape_at_soundboard;
 
             source_gain_per_volume_velocity.push(
                 projection_denominator

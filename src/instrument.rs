@@ -383,3 +383,165 @@ impl Instrument {
         self.live_voicing = LiveVoicingControls::default();
     }
 }
+
+#[cfg(test)]
+mod output_level_tests {
+    use super::*;
+    use crate::engine::osc::hammer::HammerGeometry;
+    use crate::master::OutputMaster;
+    use crate::voice::PianoVoice;
+    use nice_plug::midi::{Channel, Key, VoiceID};
+
+    struct LevelReport {
+        peak: f64,
+        mastered_peak: f64,
+        rms: f64,
+        room_peak: f64,
+        early_peak: f64,
+        label: String,
+    }
+
+    fn strike_controls(strike_randomness: &mut fastrand::Rng) -> StrikeVoicingControls {
+        StrikeVoicingControls {
+            hammer_hardness: 0.0,
+            hammer_hardness_piano: 1.0,
+            hammer_hardness_mezzo: 1.0,
+            hammer_hardness_forte: 1.0,
+            hammer_noise: 0.9 + (1.1 - 0.9) * strike_randomness.f64(),
+            hammer_tone: 0.0,
+            soft_pedal: 0.0,
+            unison_width: 9.5 + (10.5 - 9.5) * strike_randomness.f64(),
+            string_length_scale: 1.0,
+            strike_point_ratio: 0.122,
+        }
+    }
+
+    fn make_voice(
+        note: u8,
+        velocity: f32,
+        voice_id: u64,
+        geometry: HammerGeometry,
+    ) -> SynthVoice {
+        let hammer_velocity = (0.5 + (4.0 - 0.5) * velocity as f64).clamp(0.05, 12.0);
+        let velocity_blend = ((hammer_velocity - 0.5) / (4.0 - 0.5)).clamp(0.0, 1.0);
+        let noise_seed = voice_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((note as u64) << 32);
+        let mut randomness = fastrand::Rng::with_seed(noise_seed);
+        let design = note_design(note, &strike_controls(&mut randomness), velocity_blend);
+        let mut engine_voice = PianoVoice::new(&design, geometry);
+        engine_voice.strike(hammer_velocity, noise_seed);
+        SynthVoice {
+            voice_id: VoiceID::ID(voice_id as i32),
+            internal_voice_id: voice_id,
+            channel: Channel::Number(0),
+            key: Key::Number(note),
+            note,
+            releasing: false,
+            engine: engine_voice,
+        }
+    }
+
+    fn measure(label: &str, voices: &mut [Option<SynthVoice>; 8]) -> LevelReport {
+        let mut instrument = Instrument::new(20240903);
+        let mut master = OutputMaster::new(SIMULATION_RATE_HZ);
+        let mut peak = 0.0f64;
+        let mut mastered_peak = 0.0f64;
+        let mut room_peak = 0.0f64;
+        let mut early_peak = 0.0f64;
+        let mut sum_squares = 0.0f64;
+        let mut count = 0u64;
+
+        for _ in 0..(SIMULATION_RATE_HZ as u64 * 3) {
+            let (left, right) = instrument.step(voices);
+            let (mastered_left, mastered_right) = master.process(left, right);
+            let amplitude = left.abs().max(right.abs());
+            if amplitude > peak {
+                peak = amplitude;
+            }
+            let mastered_amplitude = mastered_left.abs().max(mastered_right.abs());
+            if mastered_amplitude > mastered_peak {
+                mastered_peak = mastered_amplitude;
+            }
+            let room_amplitude = instrument
+                .air
+                .pressure_at_listener_left()
+                .abs()
+                .max(instrument.air.pressure_at_listener_right().abs());
+            if room_amplitude > room_peak {
+                room_peak = room_amplitude;
+            }
+            let early_amplitude = instrument
+                .ear_field
+                .pressure_left()
+                .abs()
+                .max(instrument.ear_field.pressure_right().abs());
+            if early_amplitude > early_peak {
+                early_peak = early_amplitude;
+            }
+            sum_squares += left * left + right * right;
+            count += 1;
+        }
+
+        let rms = (sum_squares / (2.0 * count as f64)).sqrt();
+        LevelReport {
+            peak,
+            mastered_peak,
+            rms,
+            room_peak,
+            early_peak,
+            label: label.to_string(),
+        }
+    }
+
+    #[test]
+    fn print_output_levels() {
+        println!("\n=== OUTPUT LEVEL MEASUREMENTS (pre-master, 0 dB gain) ===");
+        println!("{:<36} {:>12} {:>12} {:>10}", "scenario", "peak", "peak dB", "rms dB");
+
+        let geometry = shared_hammer_geometry();
+
+        let scenarios: Vec<(&str, Vec<(u8, f32)>)> = vec![
+            ("A4 mezzo (vel 0.25)", vec![(69, 0.25)]),
+            ("A4 loud (vel 0.5)", vec![(69, 0.5)]),
+            ("A4 fortissimo (vel 1.0)", vec![(69, 1.0)]),
+            ("C6 fortissimo (vel 1.0)", vec![(84, 1.0)]),
+            ("C2 fortissimo (vel 1.0)", vec![(36, 1.0)]),
+            (
+                "8-note chord fff + sustain",
+                vec![
+                    (36, 1.0),
+                    (43, 1.0),
+                    (48, 1.0),
+                    (55, 1.0),
+                    (60, 1.0),
+                    (64, 1.0),
+                    (67, 1.0),
+                    (72, 1.0),
+                ],
+            ),
+        ];
+
+        for (label, notes) in scenarios {
+            let mut voices: [Option<SynthVoice>; 8] = [0; 8].map(|_| None);
+            for (index, &(note, velocity)) in notes.iter().enumerate() {
+                voices[index] = Some(make_voice(note, velocity, index as u64, geometry));
+            }
+            let report = measure(label, &mut voices);
+            let peak_db = 20.0 * report.peak.max(1.0e-12).log10();
+            let mastered_db = 20.0 * report.mastered_peak.max(1.0e-12).log10();
+            let rms_db = 20.0 * report.rms.max(1.0e-12).log10();
+            let room_db = 20.0 * report.room_peak.max(1.0e-12).log10();
+            let early_db = 20.0 * report.early_peak.max(1.0e-12).log10();
+            println!(
+                "{:<36} {:>9.1} dB  mastered {:>8.1} dB  rms {:>8.1} dB  room {:>7.1}  early {:>7.1}",
+                report.label, peak_db, mastered_db, rms_db, room_db, early_db
+            );
+            let ceiling = 10.0_f64.powf(crate::master::LIMITER_CEILING_DB / 20.0);
+            assert!(
+                report.mastered_peak <= ceiling + 1.0e-6,
+                "{} exceeded master ceiling: {}",
+                report.label,
+                report.mastered_peak
+            );
+        }
+    }
+}
