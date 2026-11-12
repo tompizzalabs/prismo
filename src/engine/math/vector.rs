@@ -26,6 +26,7 @@ impl Vector3 {
         Vector3::new(self.x * factor, self.y * factor, self.z * factor)
     }
 
+    #[allow(unused)]
     pub fn component(&self, axis: usize) -> f64 {
         match axis {
             0 => self.x,
@@ -33,7 +34,7 @@ impl Vector3 {
             _ => self.z,
         }
     }
-
+    #[allow(unused)]
     pub fn with_component(&self, axis: usize, value: f64) -> Vector3 {
         let mut result = *self;
         match axis {

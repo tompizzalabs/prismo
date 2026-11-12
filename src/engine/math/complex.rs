@@ -25,6 +25,7 @@ impl Complex64 {
         }
     }
 
+    #[allow(unused)]
     #[inline]
     pub fn from_real(real_part: f64) -> Self {
         Complex64 {
@@ -38,6 +39,7 @@ impl Complex64 {
         self.real_part * self.real_part + self.imaginary_part * self.imaginary_part
     }
 
+    #[allow(unused)]
     #[inline]
     pub fn conjugate(&self) -> Self {
         Complex64::new(self.real_part, -self.imaginary_part)
