@@ -130,20 +130,6 @@ impl Soundboard {
         }
     }
 
-    pub fn bridge_displacement(&self) -> Vector3 {
-        let mut displacement = Vector3::ZERO;
-
-        for mode_index in 0..self.modes.len() {
-            let modal_displacement = self.modes[mode_index].displacement;
-
-            displacement.x += self.longitudinal_bridge_coupling[mode_index] * modal_displacement;
-            displacement.y += self.horizontal_bridge_coupling[mode_index] * modal_displacement;
-            displacement.z += self.vertical_bridge_coupling[mode_index] * modal_displacement;
-        }
-
-        displacement
-    }
-
     pub fn volume_velocity(&self) -> f64 {
         let mut total_volume_velocity = 0.0;
 

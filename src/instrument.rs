@@ -1,5 +1,5 @@
 use crate::engine::math::vector::Vector3;
-use crate::engine::osc::air::{AirRoom, AirRoomDesign};
+use crate::engine::osc::air::{AirRoom, AirRoomDesign, EarlyField};
 use crate::engine::osc::hammer::{FeltProperties, HammerGeometry};
 use crate::engine::osc::soundboard::{Soundboard, SoundboardDesign};
 use crate::engine::osc::strings::{DampingCoefficients, KeysStringDesign};
@@ -248,6 +248,7 @@ pub fn shared_hammer_geometry() -> HammerGeometry {
 pub struct Instrument {
     pub soundboard: Soundboard,
     pub air: AirRoom,
+    pub ear_field: EarlyField,
     pub live_voicing: LiveVoicingControls,
     ringout_steps_remaining: u64,
     pub simulated_time: f64,
@@ -262,14 +263,7 @@ impl Instrument {
         let speed_of_sound = 343.0;
         let air_density = 1.2;
 
-        let soundboard = Soundboard::new(&SoundboardDesign {
-            mode_count: 56,
-            lowest_mode_frequency: 20.0,
-            highest_mode_frequency: 4000.0,
-            random_seed,
-        });
-
-        let air = AirRoom::new(&AirRoomDesign {
+        let air_design = AirRoomDesign {
             room_dimensions,
             speed_of_sound,
             air_density,
@@ -277,11 +271,22 @@ impl Instrument {
             soundboard_position: soundboard_center_position,
             listener_left_position,
             listener_right_position,
+        };
+
+        let soundboard = Soundboard::new(&SoundboardDesign {
+            mode_count: 56,
+            lowest_mode_frequency: 20.0,
+            highest_mode_frequency: 4000.0,
+            random_seed,
         });
+
+        let air = AirRoom::new(&air_design);
+        let ear_field = EarlyField::new(&air_design, SIMULATION_RATE_HZ);
 
         Instrument {
             soundboard,
             air,
+            ear_field,
             live_voicing: LiveVoicingControls::default(),
             ringout_steps_remaining: 0,
             simulated_time: 0.0,
@@ -356,17 +361,23 @@ impl Instrument {
             self.air.advance(soundboard_volume_velocity, sub_step_size);
         }
 
+        // Feed the soundboard's volume acceleration into the per-ear direct and
+        // early-reflection field, so each ear gets its own ITD/ILD taps.
+        let volume_acceleration = self.soundboard.volume_acceleration();
+        self.ear_field.push(volume_acceleration);
+
         self.simulated_time += SIMULATION_STEP_SIZE;
 
         (
-            self.air.pressure_at_listener_left(),
-            self.air.pressure_at_listener_right(),
+            self.air.pressure_at_listener_left() + self.ear_field.pressure_left(),
+            self.air.pressure_at_listener_right() + self.ear_field.pressure_right(),
         )
     }
 
     pub fn reset(&mut self) {
         self.soundboard.reset();
         self.air.reset();
+        self.ear_field.reset();
         self.ringout_steps_remaining = 0;
         self.simulated_time = 0.0;
         self.live_voicing = LiveVoicingControls::default();

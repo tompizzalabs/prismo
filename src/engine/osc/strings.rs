@@ -47,8 +47,6 @@ fn transverse_mode_angular_frequency(
 pub struct KeysString {
     pub design: KeysStringDesign,
     pub lateral_offset_from_hammer_center: f64,
-    pub linear_mass_density: f64,
-    pub bending_stiffness: f64,
     pub axial_stiffness: f64,
     pub tuned_tension: f64,
     pub inverse_speaking_length: f64,
@@ -56,8 +54,6 @@ pub struct KeysString {
     pub horizontal_modes: Vec<ModalOscillator>,
     pub longitudinal_modes: Vec<ModalOscillator>,
     pub mode_shape_at_strike_point: Vec<f64>,
-    pub mode_wavenumbers: Vec<f64>,
-    pub alternating_signs: Vec<f64>,
     pub bridge_inertial_coefficients: Vec<f64>,
     pub end_slope_coefficients: Vec<f64>,
 }
@@ -101,8 +97,6 @@ impl KeysString {
         let mut vertical_modes = Vec::with_capacity(number_of_transverse_modes);
         let mut horizontal_modes = Vec::with_capacity(number_of_transverse_modes);
         let mut mode_shape_at_strike_point = Vec::with_capacity(number_of_transverse_modes);
-        let mut mode_wavenumbers = Vec::with_capacity(number_of_transverse_modes);
-        let mut alternating_signs = Vec::with_capacity(number_of_transverse_modes);
         let mut bridge_inertial_coefficients = Vec::with_capacity(number_of_transverse_modes);
         let mut end_slope_coefficients = Vec::with_capacity(number_of_transverse_modes);
 
@@ -139,8 +133,6 @@ impl KeysString {
 
             mode_shape_at_strike_point
                 .push((mode_index as f64 * PI * design.hammer_strike_ratio).sin());
-            mode_wavenumbers.push(wavenumber);
-            alternating_signs.push(alternating_sign);
             bridge_inertial_coefficients.push(linear_mass_density * alternating_sign / wavenumber);
             end_slope_coefficients.push(wavenumber * alternating_sign);
         }
@@ -172,8 +164,6 @@ impl KeysString {
         KeysString {
             design,
             lateral_offset_from_hammer_center: lateral_offset,
-            linear_mass_density,
-            bending_stiffness,
             axial_stiffness,
             tuned_tension,
             inverse_speaking_length: 1.0 / design.speaking_length,
@@ -181,8 +171,6 @@ impl KeysString {
             horizontal_modes,
             longitudinal_modes,
             mode_shape_at_strike_point,
-            mode_wavenumbers,
-            alternating_signs,
             bridge_inertial_coefficients,
             end_slope_coefficients,
         }

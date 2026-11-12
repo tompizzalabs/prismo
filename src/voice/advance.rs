@@ -81,12 +81,8 @@ impl PianoVoice {
                 );
             }
 
-            let total_shank_torque = self
-                .hammer
-                .shank_torque(hammer_angle_source, total_felt_force_on_strings)
-                + self.hammer.rest_rail_torque();
             self.hammer
-                .advance_shank_rotation(total_shank_torque, step_size);
+                .advance_shank_with_felt_force(total_felt_force_on_strings, step_size);
 
             let mut voice_bridge_force = Vector3::ZERO;
             for piano_string in &self.strings {

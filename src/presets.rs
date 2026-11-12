@@ -4,9 +4,13 @@ use crate::PrismoParams;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AdjustableParameter {
+    #[allow(dead_code)]
     OutputGain,
+    #[allow(dead_code)]
     MinimumStrike,
+    #[allow(dead_code)]
     MaximumStrike,
+    #[allow(dead_code)]
     Damper,
     HammerHardness,
     HammerHardnessPiano,
